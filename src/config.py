@@ -82,3 +82,9 @@ LOG_LEVEL = "INFO"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# ──────────────────────────────────────────────
+# LeetCode Credentials (from .env)
+# ──────────────────────────────────────────────
+LEETCODE_USERNAME = os.getenv("LEETCODE_USERNAME")
+LEETCODE_PASSWORD = os.getenv("LEETCODE_PASS")

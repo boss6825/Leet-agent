@@ -5,6 +5,8 @@ from src.config import (
     BROWSER_HEADLESS,
     DELAY_BETWEEN_AGENT_CALLS,
     LC_LANGUAGE_NAMES,
+    LEETCODE_USERNAME,
+    LEETCODE_PASSWORD,
 )
 from src.browser.helpers import extract_json, sanitize_code_for_prompt
 from src.utils.logger import logger
@@ -32,19 +34,21 @@ class BrowserAgent:
         provider = BROWSER_AGENT_CONFIG["provider"]
         model = BROWSER_AGENT_CONFIG["model"]
 
+        # browser-use 0.12+ has its own LLM wrappers under browser_use.llm
         if provider == "openai":
-            from langchain_openai import ChatOpenAI
+            from browser_use.llm.openai.chat import ChatOpenAI
             self.llm = ChatOpenAI(model=model)
         elif provider == "anthropic":
-            from langchain_anthropic import ChatAnthropic
+            from browser_use.llm.anthropic.chat import ChatAnthropic
             self.llm = ChatAnthropic(model=model)
         elif provider == "gemini":
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            self.llm = ChatGoogleGenerativeAI(model=model)
+            from browser_use.llm.google.chat import ChatGoogle
+            self.llm = ChatGoogle(model=model)
         else:
             raise ValueError(f"Unsupported browser agent provider: {provider}")
 
-        self.browser = Browser(headless=BROWSER_HEADLESS)
+        self.browser = BrowserSession(headless=BROWSER_HEADLESS)
+        await self.browser.start()
         self._initialized = True
         logger.info(f"Browser agent initialized with {provider}:{model}")
 
@@ -63,7 +67,7 @@ class BrowserAgent:
                 agent = Agent(
                     task=task,
                     llm=self.llm,
-                    browser=self.browser,
+                    browser_session=self.browser,
                 )
                 result = await asyncio.wait_for(
                     agent.run(), timeout=120  # 2 minute timeout per agent task
@@ -118,7 +122,8 @@ class BrowserAgent:
     # ──────────────────────────────────────────
 
     async def ensure_logged_in(self) -> str:
-        """Check if user is logged into LeetCode. Returns 'LOGGED_IN' or 'NOT_LOGGED_IN'."""
+        """Check if user is logged into LeetCode. Returns 'LOGGED_IN' or 'NOT_LOGGED_IN'.
+        If not logged in and credentials are available, logs in automatically."""
         result = await self._run_agent_task(
             """
 Go to https://leetcode.com
@@ -137,7 +142,100 @@ If the user is NOT logged in, return exactly: NOT_LOGGED_IN
         )
         if result and "LOGGED_IN" in result and "NOT_LOGGED_IN" not in result:
             return "LOGGED_IN"
+
+        # Auto-login if credentials are available
+        if LEETCODE_USERNAME and LEETCODE_PASSWORD:
+            logger.info("Not logged in. Attempting auto-login...")
+            login_ok = await self._login()
+            if login_ok:
+                return "LOGGED_IN"
+
         return "NOT_LOGGED_IN"
+
+    async def _login(self) -> bool:
+        """Log into LeetCode using credentials from .env.
+        Uses sensitive_data so credentials never appear in prompts/logs."""
+        result = await self._run_agent_task_with_secrets(
+            task="""
+Go to https://leetcode.com/accounts/login/
+
+STEP 1: Wait for the login page to fully load. You should see email/username
+and password input fields.
+
+STEP 2: Click on the username/email input field and type the value of
+x_username (use the secret placeholder).
+
+STEP 3: Click on the password input field and type the value of
+x_password (use the secret placeholder).
+
+STEP 4: Click the "Sign In" button to submit the login form.
+
+STEP 5: Wait for the page to redirect after login (up to 15 seconds).
+Check if login was successful:
+- If you see a profile avatar or username in the nav bar: return LOGGED_IN
+- If you see an error message like "Invalid credentials": return LOGIN_FAILED
+- If you see a CAPTCHA or verification challenge: return CAPTCHA_REQUIRED
+
+Return exactly one of: LOGGED_IN, LOGIN_FAILED, CAPTCHA_REQUIRED
+""",
+            secrets={
+                "x_username": LEETCODE_USERNAME,
+                "x_password": LEETCODE_PASSWORD,
+            },
+            max_retries=2,
+        )
+        if result and "LOGGED_IN" in result:
+            logger.info("Auto-login successful!")
+            return True
+        if result and "CAPTCHA" in result:
+            logger.warning("CAPTCHA detected during login. Manual intervention needed.")
+        else:
+            logger.error(f"Auto-login failed: {result}")
+        return False
+
+    async def _run_agent_task_with_secrets(
+        self, task: str, secrets: dict[str, str], max_retries: int = 2
+    ) -> str | None:
+        """Like _run_agent_task but passes sensitive_data to the agent
+        so credentials are injected securely without appearing in the prompt."""
+        if not self._initialized:
+            await self.initialize()
+
+        for attempt in range(max_retries):
+            try:
+                agent = Agent(
+                    task=task,
+                    llm=self.llm,
+                    browser_session=self.browser,
+                    sensitive_data=secrets,
+                )
+                result = await asyncio.wait_for(agent.run(), timeout=120)
+                result_text = str(result)
+
+                if not result_text or result_text.strip() == "":
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(DELAY_BETWEEN_AGENT_CALLS)
+                        continue
+                    return None
+
+                await asyncio.sleep(DELAY_BETWEEN_AGENT_CALLS)
+                return result_text
+
+            except asyncio.TimeoutError:
+                logger.error(f"Login task timed out (attempt {attempt + 1})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(DELAY_BETWEEN_AGENT_CALLS)
+                    continue
+                return None
+
+            except Exception as e:
+                logger.error(f"Login task failed: {e} (attempt {attempt + 1})")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(DELAY_BETWEEN_AGENT_CALLS)
+                    continue
+                return None
+
+        return None
 
     async def get_contest_questions(self, contest_slug: str) -> list[dict] | None:
         """
@@ -471,7 +569,7 @@ Return the transcript text (or NO_TRANSCRIPT).
         """Clean up browser resources."""
         if self.browser:
             try:
-                await self.browser.close()
+                await self.browser.stop()
             except Exception as e:
                 logger.warning(f"Error closing browser: {e}")
             self.browser = None
