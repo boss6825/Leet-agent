@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python -c \"from browser_use import Browser; print\\(type\\(Browser\\)\\)\" 2>&1; .venv/Scripts/python -c \"from browser_use import BrowserSession; import inspect; sig = inspect.signature\\(BrowserSession.__init__\\); print\\(sig\\)\" 2>&1)",
+      "Bash(.venv/Scripts/python -c \"\nimport browser_use.llm as llm_module\nprint\\(dir\\(llm_module\\)\\)\n\" 2>&1)",
+      "Bash(.venv/Scripts/python -c \"\nfrom browser_use.llm import _LAZY_IMPORTS\nprint\\(_LAZY_IMPORTS\\)\n\" 2>&1)"
+    ]
+  }
+}

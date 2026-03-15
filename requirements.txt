@@ -1,0 +1,9 @@
+browser-use
+langchain-openai
+langchain-anthropic
+langchain-google-genai
+openai
+anthropic
+google-genai
+python-dotenv
+rich
